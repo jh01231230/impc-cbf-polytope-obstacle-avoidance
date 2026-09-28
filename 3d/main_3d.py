@@ -72,7 +72,7 @@ def _box_faces(verts: np.ndarray) -> List[np.ndarray]:
 
 @dataclass(frozen=True)
 class RobotCuboidLocal:
-    """One axis-aligned cuboid component in the robot local frame (no rotation in this demo)."""
+    """One axis-aligned cuboid component in the robot local frame before body rotation."""
 
     x_min: float
     x_max: float
@@ -316,7 +316,7 @@ def build_robot_cuboids(cfg: NMPCConfig) -> List[RobotCuboidLocal]:
     #   Arm X: x∈[0,L], y∈[0,t]
     #   Arm Y: x∈[0,t], y∈[0,L]
     # Then shift both so the union centroid is at the origin (so state x,y,z is centered).
-    # Per user request: make the L arms longer (2× length on both sides).
+    # L-shape arms use 2x the nominal length on both sides (Sec. V-C).
     L = float(max(1e-6, 2.0 * length))
     t = float(max(1e-6, width))
     denom = max(1e-9, 2.0 * L - t)

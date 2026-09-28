@@ -11,12 +11,12 @@ from cbf_geometry import ConvexRegion2D
 
 try:
     import casadi as ca  # type: ignore
-except ImportError:  # pragma: no cover - casadi is optional in this workspace
+except ImportError:  # pragma: no cover - CasADi is optional
     ca = None
 
 
 # ---------------------------------------------------------------------------
-# Optimization-based planner (reference: planning/path_generator/opt_planner.py)
+# Optional CasADi-based optimization planner (not used by default).
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -104,7 +104,7 @@ class _Node:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _Node):
             return NotImplemented
-        # Match reference/cbf tie-breaking behavior: use exact position equality on grid nodes.
+        # Tie-breaking: use exact position equality on grid nodes.
         return bool(np.all(self.pos == other.pos))
 
     def __le__(self, other: "_Node") -> bool:
@@ -142,7 +142,7 @@ class _GridMap:
         ]
 
     def _index(self, pos: np.ndarray) -> Tuple[int, int]:
-        # Match reference/cbf: assume query is within bounds; no clipping.
+        # Assume query is within bounds; no clipping.
         ix = int(math.floor((pos[0] - self.bounds[0][0]) / self.cell_size))
         iy = int(math.floor((pos[1] - self.bounds[0][1]) / self.cell_size))
         return ix, iy
@@ -208,7 +208,7 @@ class _GraphSearch:
         return [path[len(path) - i - 1] for i in range(len(path))]
 
     def line_of_sight(self, a: _Node, b: _Node) -> bool:
-        # Match reference/cbf astar.py exactly.
+        # Standard A* on the occupancy grid.
         e = float(self.graph.cell_size)
         div = float(np.linalg.norm(b.pos - a.pos)) / e
         if div < 1e-9:
@@ -280,7 +280,7 @@ class _GraphSearch:
         return []
 
     def reduce_path(self, path: List[_Node]) -> List[_Node]:
-        """Line-of-sight reduction (match reference/cbf GraphSearch.reduce_path)."""
+        """Line-of-sight path reduction."""
         red_path: List[_Node] = []
         if len(path) > 1:
             for i in range(1, len(path)):

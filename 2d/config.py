@@ -1,4 +1,4 @@
-"""Configuration utilities for the dual-distance NMPC example."""
+"""Configuration for iterative convex MPC-DHOCBF experiments (Sec. V-A)."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -24,7 +24,7 @@ class Bounds:
 
 @dataclass(frozen=True)
 class DualSlackConfig:
-    """Parameters governing the dual-distance CBF slack variable ω."""
+    """Parameters governing DHOCBF slack variables omega in the OSQP formulation."""
 
     # Allow very small slack to enforce near-hard distance
     omega_lower_anchor: float = 1e-4
@@ -36,7 +36,7 @@ class DualSlackConfig:
 
 @dataclass(frozen=True)
 class NMPCConfig:
-    """Top-level configuration container for the iMPC example."""
+    """Top-level configuration for the 2D iMPC-DHOCBF controller."""
 
     horizon: int = 24
     # Only enforce/check safety on the first few steps.
@@ -58,7 +58,7 @@ class NMPCConfig:
     # Unstick repulsion: when the robot is too close to an obstacle, add a temporary
     # linear cost that pushes predicted positions away from the closest obstacle.
     enable_unstick_repulsion: bool = False
-    # Tuned for the oblique_maze scale (s=0.15): activate before we get "pinned".
+    # Distance threshold (m) for optional unstick repulsion near obstacles.
     unstick_distance_threshold: float = 0.02  # meters
     unstick_weight: float = 10.0              # cost weight (higher => stronger push-off)
     unstick_horizon_steps: int = 6            # apply to first k predicted states
@@ -73,43 +73,36 @@ class NMPCConfig:
     # "least violating" among infeasible inner-loop solutions). Instead we will apply a hold and
     # optionally replan.
     allow_in_barrier_fallback: bool = False
-    # Clearance margin used by the linearized “real CBF” constraint inside OSQP (meters).
-    # 0.0 means “just avoid collision”; a positive value adds clearance.
+    # Clearance margin used by the linearized DHOCBF constraint inside OSQP (meters).
+    # 0.0 means just avoid collision; a positive value adds clearance.
     cbf_margin_dist: float = 0.0
-    # DCBF decay rate γ ∈ (0,1]. Rolled-out constraint: h(x_{k+1|t}) ≥ γ^{k+1} h(x_t).
-    # γ = 1.0 disables decay (static h ≥ 0); smaller values allow h to shrink along the horizon.
+    # DCBF decay rate gamma in (0,1]. Rolled-out constraint: h(x_{k+1|t}) >= gamma^{k+1} h(x_t).
+    # gamma = 1.0 disables decay (static h >= 0); smaller values allow h to shrink along the horizon.
     cbf_decay: float = 0.1
-    # Reference window lookahead buffer (matches ConstantSpeedTrajectoryGenerator._proj_dist_buffer).
-    # Smaller lookahead reduces corner-cutting for our yaw-rate model + short horizon (N=6).
+    # Lookahead buffer for the moving-window reference path (Sec. V-A3).
     reference_proj_dist_buffer: float = 0.03
     # Numerical tolerance for collision checks: treat penetrations smaller than this as non-colliding.
-    # This prevents false positives from solver tolerances / geometry numerical noise.
-    # 1mm tolerance is enough to avoid false positives near polygon boundaries.
     barrier_penetration_tol: float = 0
     state_bounds: Bounds = field(
         default_factory=lambda: Bounds.from_sequences(
-            # Allow a small reverse speed for recovery from dead-ends (reference/cbf does not
-            # explicitly constrain v >= 0 in its optimizer).
+            # Allow small reverse speed for recovery from dead-ends (Sec. V-A1).
             lower=[-10.0, -10.0, -10.0, -10.0],
             upper=[10.0, 10.0, 10.0, 10.0],
         )
     )
-    # Control bounds (match reference CBF `reference/cbf/control/dcbf_optimizer.py`):
-    # accel ∈ [-0.5, 0.5], yaw-rate ∈ [-0.5, 0.5]
+    # Control bounds from Sec. V-A1: yaw-rate and acceleration in [-0.5, 0.5].
     input_bounds: Bounds = field(
         default_factory=lambda: Bounds.from_sequences(
-            # NOTE: our decision vector has 6 "inputs" but only the first 2 are used by the dynamics:
-            # u[0] = yaw-rate, u[1] = accel (both bounded to match reference).
+            # Decision vector has 6 entries; dynamics use u[0]=yaw-rate and u[1]=acceleration.
             lower=[-0.5, -0.5, -np.inf, -np.inf, -np.inf, -np.inf],
             upper=[0.5, 0.5, np.inf, np.inf, np.inf, np.inf],
         )
     )
-    # Tracking weights: increase heading + speed tracking to reduce overspeeding into corners.
+    # Tracking weights on [x, y, heading, speed].
     Q_diagonal: np.ndarray = field(
         default_factory=lambda: np.asarray([100.0, 100.0, 5.0, 20.0], dtype=float)
     )
-    # Input regularization: keep yaw-rate cheap, make acceleration a bit more expensive to
-    # discourage repeatedly saturating accel/brake to chase the moving reference window.
+    # Input regularization on the active control channels.
     R_diagonal: np.ndarray = field(
         default_factory=lambda: np.asarray(
             [0.1, 0.1, 0.0, 0.0, 0.0, 0.0], dtype=float
@@ -118,26 +111,20 @@ class NMPCConfig:
     reference_input: np.ndarray = field(
         default_factory=lambda: np.asarray([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=float)
     )
-    # Desired cruising speed (m/s) for waypoint tracking (matches reference controller ~0.2)
+    # Desired cruising speed (m/s) for the moving-window reference (Sec. V-A3).
     reference_speed: float = 0.1
 
     # ------------------------------------------------------------------
-    # Robot geometry (match reference/cbf `models/kinematic_car_test.py`)
-    #
-    # Supported shapes:
-    # - "rectangle": KinematicCarRectangleGeometry(length=0.15, width=0.06, rear_dist=0.10)
-    # - "triangle": KinematicCarTriangleGeometry(0.75 * [[0.14,0],[-0.03,0.05],[-0.03,-0.05]])
-    # - "lshape"  : two convex parts (each via convex hull), scaled by 0.4
+    # Robot geometry (Sec. V-A2): rectangle, triangle, or L-shape footprint.
     # ------------------------------------------------------------------
     robot_shape: str = "lshape"  # "rectangle" | "triangle" | "lshape"
 
-    # Rectangle parameters (meters). rear_dist is the offset of the reference point (state x,y)
-    # from the rear edge along +x in the robot frame (see reference/cbf).
+    # Rectangle parameters (meters). rear_dist offsets the reference point from the rear edge (+x).
     robot_rectangle_length: float = 0.15
     robot_rectangle_width: float = 0.06
     robot_rectangle_rear_dist: float = 0.10
 
-    # Triangle vertices in the robot frame (meters), reference/cbf uses a 0.75 scale.
+    # Triangle vertices in the robot frame (meters), scaled by 0.75 as in Sec. V-A2.
     robot_triangle_points: np.ndarray = field(
         default_factory=lambda: 0.75
         * np.asarray(
@@ -150,8 +137,7 @@ class NMPCConfig:
         )
     )
 
-    # L-shape is represented as the union of two convex parts (each defined by points and then
-    # convex-hulled), reference/cbf uses a 0.4 scale.
+    # L-shape as the union of two convex parts (convex hull of each point set), scale 0.4.
     robot_lshape_part1_points: np.ndarray = field(
         default_factory=lambda: 0.4
         * np.asarray(
@@ -195,4 +181,3 @@ class NMPCConfig:
 
 
 DEFAULT_CONFIG = NMPCConfig()
-

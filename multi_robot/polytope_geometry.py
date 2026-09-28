@@ -1,3 +1,4 @@
+"""Closest-point queries and robot half-space models for polytope obstacles."""
 import contextlib
 import io
 import math
@@ -63,7 +64,7 @@ def _robot_points_from_cfg(cfg: NMPCConfig) -> np.ndarray:
 def init_model(cfg: NMPCConfig | None = None, mode: str = "") -> None:
     """Initialize the shape-aware robot half-space model.
 
-    `mode` is retained for backwards compatibility with the old interface.
+    The optional `mode` argument is ignored (kept for API compatibility).
     """
     _ = mode
     global _ROBOT_A_LOCAL, _ROBOT_B_LOCAL, _ROBOT_VERTICES_LOCAL, _ROBOT_SHAPE_KEY
@@ -191,7 +192,7 @@ def infer(state: Iterable[float]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, n
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        raise SystemExit("Usage: fake_infer.py x y [theta]")
+        raise SystemExit("Usage: polytope_geometry.py x y [theta]")
     x_coord = float(sys.argv[1])
     y_coord = float(sys.argv[2])
     theta_value = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0

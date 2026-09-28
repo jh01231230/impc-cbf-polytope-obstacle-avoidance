@@ -35,7 +35,7 @@ from scipy.sparse import (
 from scipy.linalg import block_diag
 from scipy.spatial import ConvexHull
 
-from fake_infer import (
+from polytope_geometry import (
     _OBSTACLE_HALFSPACES,
     init_model,
     robot_halfspace,
@@ -67,10 +67,10 @@ class ObstacleGeometry:
 
 @dataclass
 class DualDistanceSolution:
-    """Dual-distance decision variables extracted from OSQP."""
+    """Closest-point auxiliary variables extracted from the OSQP solution."""
 
     # For concave robots we represent the robot as a union of convex components.
-    # All dual-distance variables are indexed by (obstacle, component, horizon_step).
+    # All closest-point variables are indexed by (obstacle, component, horizon_step).
     y_obs: np.ndarray  # shape (m, C, N, 2)
     y_robot: np.ndarray  # shape (m, C, N, 2)
     lambda_obs: List[np.ndarray]  # list per obstacle: shape (C, N, facets_obs)
@@ -163,7 +163,7 @@ def _convex_hull_geometry(points: np.ndarray) -> RobotComponentGeometry:
 
 
 def build_robot_geometry(cfg: NMPCConfig) -> List[RobotComponentGeometry]:
-    """Build robot geometry components matching reference/cbf shapes."""
+    """Build robot geometry components from the configured footprint (Sec. V-B)."""
     shape = str(getattr(cfg, "robot_shape", "rectangle")).strip().lower()
     if shape == "rectangle":
         length = float(getattr(cfg, "robot_rectangle_length", 0.15))
@@ -416,7 +416,7 @@ def _initialize_dual_solution(
     robot_As: List[np.ndarray],
     robot_bs: List[np.ndarray],
 ) -> DualDistanceSolution:
-    """Construct an initial dual-distance guess via distance queries."""
+    """Construct an initial closest-point warm start via distance queries."""
 
     horizon = x_traj.shape[1] - 1
     m = len(obstacles)
@@ -521,7 +521,7 @@ def _extract_dual_solution(
     robot_component_facets: Sequence[int],
     horizon: int,
 ) -> DualDistanceSolution:
-    """Parse the OSQP solution vector into structured dual-distance data."""
+    """Parse the OSQP solution vector into structured closest-point data."""
 
     m = len(obstacles)
     n_components = int(len(robot_component_facets))
@@ -1149,7 +1149,7 @@ def impcdcbf(
     goal_xy = goal_state[:2]
 
     try:
-        # Match reference/cbf guidance: use grid-based A* + line-of-sight reduction.
+        # Global path: grid-based A* with line-of-sight reduction (Thirugnanam et al., ICRA 2022).
         path_points = plan_path(
             start_xy,
             goal_xy,
@@ -1162,10 +1162,6 @@ def impcdcbf(
             method="astar_los",
             quad=False,
         )
-        
-        # Interpolate path to ensure density (avoid cutting corners)
-        # path_points = interpolate_path(path_points, resolution=0.01)
-        # print(f"[path] Interpolated path has {path_points.shape[0]} points (resolution=0.01)")
 
         print(f"[guiding path] Generated {path_points.shape[0]} waypoints:")
         for idx, waypoint in enumerate(path_points):
@@ -1176,8 +1172,7 @@ def impcdcbf(
         raise RuntimeError(f"Global path planner failed: {exc}") from exc
     path_points = np.asarray(path_points, dtype=float)
 
-    # Keep the global guiding path exactly as produced by the reference/cbf planner
-    # (grid cell centers + LoS reduction). Do not override endpoints or prune near-start nodes.
+    # Keep the global guiding path as produced by the planner (grid centers + LoS reduction).
 
     (x_min, y_min), (x_max, y_max) = ENVIRONMENT.bounds
     padding = 0.05 * max(x_max - x_min, y_max - y_min)
@@ -1188,9 +1183,9 @@ def impcdcbf(
     ax.set_title('iMPC Trajectory and Probing Paths')
     ax.scatter(start_xy[0], start_xy[1], color='green', s=60, marker='o', edgecolors='black', label='Start')
     ax.scatter(goal_xy[0], goal_xy[1], color='red', s=80, marker='*', label='Goal')
-    # Plot styling to match reference/cbf:
+    # Plot styling:
     # - Global path: grey dashed with small markers (static)
-    # - Local reference window: solid blue (moves forward)
+    # - Local reference window: orange (moves forward)
     guiding_line, = ax.plot(
         path_points[:, 0],
         path_points[:, 1],
@@ -1264,7 +1259,7 @@ def impcdcbf(
     stall_steps = 0
 
     # ------------------------------------------------------------------
-    # Match reference/cbf "moving window" guidance
+    # Moving-window reference guidance (Sec. V-A3):
     # - global path is a discrete grid path
     # - local reference is a constant-speed window pushed forward by projection + buffer
     # ------------------------------------------------------------------
@@ -1552,7 +1547,7 @@ def impcdcbf(
     # Track local path index for the warm start simulation
     warm_path_idx = 0
     if path_points.shape[0] > 0:
-         # Match reference/cbf: start tracking the first global waypoint.
+         # Start tracking the first global waypoint.
          warm_path_idx = 0
 
     for i in range(N + 1):
@@ -1788,7 +1783,7 @@ def impcdcbf(
         # Stall detector: if we are not making progress along the path for a while, optionally replan.
         # This helps recover from tight corners where the optimizer chooses near-zero motion.
         if cfg.enable_stall_replan and i > 5:
-            # progress_s is maintained by reference_trajectory() (reference/cbf style)
+            # progress_s is maintained by reference_trajectory()
             prog_delta = abs(float(progress_s) - float(last_progress_s))
             if prog_delta < 1e-4:
                 stall_steps += 1
@@ -2161,7 +2156,7 @@ def impcdcbf(
             f"dev_max={dev_max:.4f} dev_rms={dev_rms:.4f}"
         )
 
-        # Update the moving-window reference (reference/cbf style) and visualization.
+        # Update the moving-window reference and visualization.
         current_state_flat = x0.reshape(-1)
         current_pos = current_state_flat[:2]
         xr = reference_trajectory(current_pos, heading_cur=float(current_state_flat[2]))
@@ -2386,7 +2381,7 @@ def lineardyn(
     previous_solution: Optional[DualDistanceSolution] = None,
     extra_obstacle_halfspaces: Sequence[Tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, DualDistanceSolution]:
-    """Solve the dual-distance OSQP problem for the current horizon."""
+    """Solve the closest-point OSQP subproblem for the current horizon."""
 
     obstacles = _load_obstacle_geometry(cfg, extra_halfspaces=extra_obstacle_halfspaces)
     robot_components = build_robot_geometry(cfg)
@@ -2669,9 +2664,8 @@ def lineardyn(
                     vals = A_obs[facet].tolist()
                     add_row(cols, vals, -np.inf, b_obs[facet])
 
-                # IMPORTANT: decouple the auxiliary contact-point optimization from the MPC state
-                # variables. These y/lambda variables are only used for visualization/debug and
-                # should not "pull" the predicted state toward obstacles.
+                # Decouple the auxiliary closest-point variables from the MPC state so they
+                # do not pull the predicted state toward obstacles.
                 for facet in range(facet_count_robot):
                     cols = list(range(y_robot_slice.start, y_robot_slice.stop))
                     vals = robot_As[comp_idx][step][facet].tolist()
@@ -2693,20 +2687,17 @@ def lineardyn(
                     )
 
                 # ----------------------------------------------------------
-                # "Real CBF" (linearized) safety constraint coupled to MPC state
+                # Linearized DHOCBF constraint coupled to the MPC state.
                 #
-                # We linearize a separating-plane constraint around the current trajectory guess
-                # x_traj. This produces a *linear* inequality in the OSQP decision variables
-                # (x_k, y_k, theta_k) for the predicted state at this step.
+                # We linearize a supporting-hyperplane constraint around the current trajectory
+                # guess x_traj, producing a linear inequality in (x_k, y_k, theta_k).
                 #
                 # For each (obstacle, component, step) we take the closest-point pair from the
-                # current dual-distance seed (computed from the same guess), define a separation
-                # normal n, then enforce:
+                # current warm start, define a separation normal n, then enforce:
                 #     n^T (p_k + R(theta_k) q_local - y_obs) >= cbf_margin
                 # with R(theta_k) q_local linearized about theta_guess.
                 #
-                # This couples safety to the MPC state while keeping OSQP linear-quadratic.
-                # A final rollout `in_barrier()` safety filter is still applied outside OSQP.
+                # A rollout `in_barrier()` safety filter is still applied outside OSQP.
                 # ----------------------------------------------------------
                 if step < k_cbf:
                     try:
@@ -2780,7 +2771,7 @@ def lineardyn(
                         )
                     except Exception:
                         # If the linearization fails for numerical reasons, skip this constraint.
-                        # The outer safety filter still guarantees we don't execute unsafe rollouts.
+                        # The outer safety filter rejects in-barrier candidates before execution.
                         pass
 
                 dual_cols: List[int] = []
@@ -2895,7 +2886,7 @@ def lineardyn2(
     previous_solution: Optional[DualDistanceSolution] = None,
     extra_obstacle_halfspaces: Sequence[Tuple[np.ndarray, np.ndarray]] | None = None,
 ):
-    """Second-order variant currently reuses the dual-distance formulation."""
+    """Second-order variant currently reuses the closest-point OSQP formulation."""
     return lineardyn(
         ur,
         xr,

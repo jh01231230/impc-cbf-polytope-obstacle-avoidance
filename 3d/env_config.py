@@ -278,8 +278,8 @@ def _create_random_3d_gate_maze(seed: int = 0) -> EnvironmentSpec:
     # With the default L-shape cuboid robot (~0.15m span in x), using too many walls
     # makes the inter-wall free space too short. We therefore use fewer walls with
     # larger gaps.
-    # With a longer (2×) L-shape robot and reverted smaller windows, we keep fewer walls
-    # so there is enough free space between slabs to maneuver.
+    # With the longer L-shape robot (Sec. V-C), we keep fewer walls so there is enough
+    # free space between slabs to maneuver.
     n_walls = 5
     thickness = 0.22 * env_scale
     y_span = float(y_max - y_min)
